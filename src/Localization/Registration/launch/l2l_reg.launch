@@ -15,6 +15,7 @@
         <param name="max_cor_dis" value="5"/>
         <param name="ransac_iter" value="10"/>
         <param name="neibor_k" value="50"/>
+        <param name="drone_id" value="$(arg drone_id)"/>
 
         <param name="resolution"    value="0.1"/>
         <param name="is_use_pcd"    value="false"/>

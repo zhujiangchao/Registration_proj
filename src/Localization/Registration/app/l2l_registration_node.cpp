@@ -34,6 +34,7 @@ typedef pcl::PointXYZI Point_T;
 bool g_is_full_map_received = false;
 bool g_is_local_map_received = false;
 bool g_is_use_pcd = true;
+
 pcl::PointCloud<Point_T>::Ptr g_full_map_ptr, g_local_map_ptr;
 string g_icp_pattern, g_full_map_fn;
 std::vector<float> g_init_guess;
@@ -42,7 +43,7 @@ Eigen::Matrix4f g_HT_init_guess = Eigen::Matrix4f::Identity();
 Eigen::Matrix4f g_HT = Eigen::Matrix4f::Identity();
 Eigen::Matrix4f g_HT_body_wrt_w0 = Eigen::Matrix4f::Identity();
 
-int g_icp_iter, g_ransac_iter, g_neibor_k;
+int g_icp_iter, g_ransac_iter, g_neibor_k, g_drone_id;
 float g_max_cor_dis;
 float g_trigger_time;
 float g_resolution;
@@ -234,34 +235,27 @@ int main(int argc, char** argv)
     nh.getParam("full_map_fn", g_full_map_fn);
     nh.getParam("trigger_time", g_trigger_time);
     nh.getParam("resolution", g_resolution);
+    nh.getParam("drone_id", g_drone_id);
 
     g_init_guess[3] = g_init_guess[3] * M_PI / 180;
     g_init_guess[4] = g_init_guess[4] * M_PI / 180;
     g_init_guess[5] = g_init_guess[5] * M_PI / 180;
 
     std::cout << "is_use_pcd = " << g_is_use_pcd << std::endl;
+    std::cout << "drone_id = " << g_drone_id << std::endl;
 
-    Eigen::Vector3d eular_init_guess;
-    eular_init_guess = Eigen::Vector3d(g_init_guess[3], g_init_guess[4], g_init_guess[5]);
-    Eigen::Quaternionf q_init_guess = euler2quaternion(eular_init_guess).cast<float>();
-
-    g_HT_init_guess.block<3,1>(0,3) = Eigen::Vector3f(g_init_guess[0], g_init_guess[1], g_init_guess[2]);
-    g_HT_init_guess.block<3,3>(0,0) = q_init_guess.toRotationMatrix();
-
-    g_HT = g_HT_init_guess;
-
-    // step 2: register subscriber and publisher
-
-
-
-    reg_trigger_pub = nh.advertise<std_msgs::Empty>("/trigger_to_drones", 1);
-
-    full_map_pub = nh.advertise<sensor_msgs::PointCloud2>("/full_map_test", 1);
-    local_odom_pub = nh.advertise<nav_msgs::Odometry>("/local_ref",1);
+    lidar_odom_sub = nh.subscribe("Odometry_old", 10, lidar_odom_cb, ros::TransportHints().tcpNoDelay());
+    lidar_map_sub = nh.subscribe("cloud_old", 10, lidar_pc_cb, ros::TransportHints().tcpNoDelay());
 
     modify_odom_pub = nh.advertise<nav_msgs::Odometry>("Odometry_new",1);
     modify_local_map_pub = nh.advertise<sensor_msgs::PointCloud2>("cloud_new",1);
-    
+
+    reg_trigger_pub = nh.advertise<std_msgs::Empty>("/trigger_to_drones", 1);
+    local_odom_pub = nh.advertise<nav_msgs::Odometry>("/local_ref",1);       
+
+    full_map_pub = nh.advertise<sensor_msgs::PointCloud2>("/full_map_dbg", 1); 
+
+    // get full map 
     if (!g_is_use_pcd) {
       full_map_sub = nh.subscribe("/full_map", 1, full_map_cb, ros::TransportHints().tcpNoDelay());      
     } else {
@@ -278,13 +272,23 @@ int main(int argc, char** argv)
       full_map_msg.header.frame_id = "world";
 
       g_is_full_map_received = true;
-      
     }
 
-    local_map_sub = nh.subscribe("/local_map", 1, local_map_cb, ros::TransportHints().tcpNoDelay());
+    // get local map      
+    local_map_sub = nh.subscribe("/local_map", 1, local_map_cb, ros::TransportHints().tcpNoDelay());    
+        
+    if (g_drone_id == 0) {
+      std::cout << "I'm drone 0, just trigger for publishing full map!!!" << std::endl;
+    } else {
+      Eigen::Vector3d eular_init_guess;
+      eular_init_guess = Eigen::Vector3d(g_init_guess[3], g_init_guess[4], g_init_guess[5]);
+      Eigen::Quaternionf q_init_guess = euler2quaternion(eular_init_guess).cast<float>();
 
-    lidar_odom_sub = nh.subscribe("Odometry_old", 10, lidar_odom_cb, ros::TransportHints().tcpNoDelay());
-    lidar_map_sub = nh.subscribe("cloud_old", 10, lidar_pc_cb, ros::TransportHints().tcpNoDelay());
+      g_HT_init_guess.block<3,1>(0,3) = Eigen::Vector3f(g_init_guess[0], g_init_guess[1], g_init_guess[2]);
+      g_HT_init_guess.block<3,3>(0,0) = q_init_guess.toRotationMatrix();
+
+      g_HT = g_HT_init_guess;
+    }
 
     ros::Rate rate(10);
 
