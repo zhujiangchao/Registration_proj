@@ -6,7 +6,7 @@
         <remap from="~Odometry_new" to="/drone_$(arg drone_id)_Odometry_new"/>
         <remap from="~cloud_new" to="/cloud_registered_new"/>
 
-        <rosparam param="init_guess">[0,-3,0,0,0,0]</rosparam>
+        <rosparam param="init_guess">[0,0,0,0,0,0]</rosparam>
         <rosparam param="map_range">[-50, 50, -50, 50, -1, 10]</rosparam>
 
         <param name="trigger_time" value="10"/>
