@@ -1,0 +1,36 @@
+<launch>
+    <arg name="drone_id" value="0"/>
+    <node name="drone_$(arg drone_id)_l2l_registration_node" pkg="registration" type="lidar2lidar_registration_node" output="screen" >
+        <remap from="~Odometry_old" to="/Odometry"/>
+        <remap from="~cloud_old" to="/cloud_registered"/>
+        <remap from="~Odometry_new" to="/drone_$(arg drone_id)_Odometry_new"/>
+        <remap from="~cloud_new" to="/cloud_registered_new"/>
+
+        <rosparam param="init_guess">[0,-3,0,0,0,0]</rosparam>
+        <rosparam param="map_range">[-50, 50, -50, 50, -1, 10]</rosparam>
+
+        <param name="trigger_time" value="10"/>
+        <param name="icp_pattern" value="icpPlaneToPlane"/>
+        <param name="icp_iter"  value="100"/>
+        <param name="max_cor_dis" value="5"/>
+        <param name="ransac_iter" value="10"/>
+        <param name="neibor_k" value="50"/>
+
+        <param name="resolution"    value="0.1"/>
+        <param name="is_use_pcd"    value="false"/>
+        <param name="full_map_fn"   value="/home/zuzu/Documents/BAG/FY_Project/Gym_line/drone_5.pcd"/>
+    </node>
+
+    <include file="$(find swarm_bridge)/launch/bridge_tcp_drone.launch">
+        <arg name="drone_id"    value="$(arg drone_id)"/>
+    </include>
+
+
+    <include file="$(find fast_lio)/launch/mapping_avia.launch">
+        <arg name="drone_id"    value="$(arg drone_id)"/>
+    </include>
+
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find registration)/config/l2l.rviz" required="true"/>
+  
+  </launch>
+  
