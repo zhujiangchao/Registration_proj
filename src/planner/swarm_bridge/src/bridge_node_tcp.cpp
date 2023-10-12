@@ -17,9 +17,10 @@ using namespace std;
 std::vector<int> id_list_;
 std::vector<string> ip_list_;
 ros::Subscriber other_odoms_sub_, one_traj_sub_, joystick_sub_, goal_sub_, object_odoms_sub_;
-ros::Subscriber full_map_sub_, trigger_sub_;
+ros::Subscriber full_map_sub_, trigger_sub_, other_map_sub_;
 
 ros::Publisher other_odoms_pub_, one_traj_pub_, joystick_pub_, goal_pub_, object_odoms_pub_;
+ros::Publisher other_map_pub_;
 ros::Subscriber goal_exploration_sub_,star_cvx_sub_,frontier_sub_;
 ros::Publisher goal_exploration_pub_,star_cvx_pub_,frontier_pub_, full_map_pub_, trigger_pub_;
 int self_id_;
@@ -200,6 +201,13 @@ void trigger_sub_cb(const std_msgs::EmptyPtr &msg)
   send_to_all_drone_except_me("/trigger",*msg);
 }
 
+
+// Here is callback from local topic.
+void map_sub_cb(const sensor_msgs::PointCloud2Ptr &msg)
+{
+  send_to_all_groundstation_except_me("/vis_map",*msg);// Only send to ground stations.
+}
+
 // Here is callback when the brodge received the data from others.
 void odom_bridge_cb(int ID, ros::SerializedMessage& m)
 {
@@ -257,7 +265,7 @@ void frontier_bridge_cb(int ID, ros::SerializedMessage& m)
   frontier_pub_.publish(point_msg_);
 }
 
-void map_bridge_cb(int ID, ros::SerializedMessage& m)
+void fullmap_bridge_cb(int ID, ros::SerializedMessage& m)
 {
   sensor_msgs::PointCloud2 point_msg_;
   ros::serialization::deserializeMessage(m,point_msg_);
@@ -272,7 +280,15 @@ void trigger_bridge_cb(int ID, ros::SerializedMessage& m)
   std_msgs::Empty trigger_msg_;
   ros::serialization::deserializeMessage(m,trigger_msg_);
   trigger_pub_.publish(trigger_msg_);
+}
 
+void vismap_bridge_cb(int ID, ros::SerializedMessage& m)
+{
+  sensor_msgs::PointCloud2 point_msg_;
+  ros::serialization::deserializeMessage(m,point_msg_);
+  std::cout << "map received!!!" << std::endl;
+  std::cout << "map size = " << point_msg_.width << std::endl;
+  other_map_pub_.publish(point_msg_);
 }
 
 
@@ -336,11 +352,16 @@ int main(int argc, char **argv)
 
   full_map_sub_ = nh.subscribe("/full_map", 1, full_map_cb, ros::TransportHints().tcpNoDelay());
   full_map_pub_ = nh.advertise<sensor_msgs::PointCloud2>("/full_map", 100);
-  register_callbak_to_all_drones("/full_map", map_bridge_cb);
+  register_callbak_to_all_drones("/full_map", fullmap_bridge_cb);
 
   trigger_sub_ = nh.subscribe("/trigger_from_ground", 1, trigger_sub_cb, ros::TransportHints().tcpNoDelay());
   trigger_pub_ = nh.advertise<std_msgs::Empty>("/trigger_to_drones", 100);
   register_callbak_to_all_groundstation("/trigger", trigger_bridge_cb);
+
+
+  other_map_sub_ = nh.subscribe("map_from_drones", 10, map_sub_cb, ros::TransportHints().tcpNoDelay());
+  other_map_pub_ = nh.advertise<sensor_msgs::PointCloud2>("/maps_to_ground", 10);
+  register_callbak_to_all_drones("/vis_map",vismap_bridge_cb);  
 
 
   // goal_exploration_sub_ = nh.subscribe("/goal_with_id", 100, goal_exploration_sub_udp_cb, ros::TransportHints().tcpNoDelay());
