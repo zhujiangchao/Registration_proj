@@ -59,11 +59,7 @@
 #include <livox_ros_driver/CustomMsg.h>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
-#include "std_msgs/Empty.h"
-
-#include <gflags/gflags.h>
-#include <glog/logging.h>
-
+#include <std_msgs/Empty.h>
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
@@ -76,10 +72,6 @@ double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_pl
 double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool   runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
-bool load_map_en = false;
-ros::Time global_start_time;
-bool is_map_pub = false;
-float map_duration = 0.0;
 /**************************/
 
 float res_last[100000] = {0.0};
@@ -110,6 +102,8 @@ vector<BoxPointType> cub_needrm;
 vector<PointVector>  Nearest_Points; 
 vector<double>       extrinT(3, 0.0);
 vector<double>       extrinR(9, 0.0);
+vector<double>       rotation2virtulbody(9, 0.0);
+Eigen::Matrix3d      virtualLidar_R;
 deque<double>                     time_buffer;
 deque<PointCloudXYZI::Ptr>        lidar_buffer;
 deque<sensor_msgs::Imu::ConstPtr> imu_buffer;
@@ -148,8 +142,7 @@ geometry_msgs::Quaternion geoQuat;
 geometry_msgs::PoseStamped msg_body_pose;
 
 ros::Publisher pub_map;
-
-
+bool is_map_pub = false;
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
@@ -337,8 +330,23 @@ void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg)
         printf("Self sync IMU and LiDAR, time diff is %.10lf \n", timediff_lidar_wrt_imu);
     }
 
+    // wmywmy transform point into virtual lidar frame
+    Eigen::Vector3d temp1, temp2;
+    livox_ros_driver::CustomMsg::Ptr new_msg(new livox_ros_driver::CustomMsg(*msg));
+    for (int i=0; i<new_msg->points.size(); i++)
+    {
+        temp1[0] = new_msg->points[i].x;
+        temp1[1] = new_msg->points[i].y;
+        temp1[2] = new_msg->points[i].z;
+        temp2 = virtualLidar_R * temp1;
+        new_msg->points[i].x = temp2[0];
+        new_msg->points[i].y = temp2[1];
+        new_msg->points[i].z = temp2[2];
+    }
+    // wmywmy
+
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
-    p_pre->process(msg, ptr);
+    p_pre->process(new_msg, ptr);
     lidar_buffer.push_back(ptr);
     time_buffer.push_back(last_timestamp_lidar);
     
@@ -352,6 +360,26 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
     publish_count ++;
     // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
     sensor_msgs::Imu::Ptr msg(new sensor_msgs::Imu(*msg_in));
+    
+    // wmywmy transpose imu data into virtual lidar frame
+    Eigen::Vector3d temp1, temp2;
+
+    temp1[0] = msg->angular_velocity.x;
+    temp1[1] = msg->angular_velocity.y;
+    temp1[2] = msg->angular_velocity.z;
+    temp2 = virtualLidar_R * temp1;
+    msg->angular_velocity.x = temp2[0];
+    msg->angular_velocity.y = temp2[1];
+    msg->angular_velocity.z = temp2[2];
+
+    temp1[0] = msg->linear_acceleration.x;
+    temp1[1] = msg->linear_acceleration.y;
+    temp1[2] = msg->linear_acceleration.z;
+    temp2 = virtualLidar_R * temp1;
+    msg->linear_acceleration.x = temp2[0];
+    msg->linear_acceleration.y = temp2[1];
+    msg->linear_acceleration.z = temp2[2];
+    // wmywmy
 
     msg->header.stamp = ros::Time().fromSec(msg_in->header.stamp.toSec() - time_diff_lidar_to_imu);
     if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
@@ -377,7 +405,6 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
     sig_buffer.notify_all();
 }
 
-
 void trigger_cbk(const std_msgs::Empty::ConstPtr& msg_in) {
     PointVector ().swap(ikdtree.PCL_Storage);
     ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
@@ -389,8 +416,8 @@ void trigger_cbk(const std_msgs::Empty::ConstPtr& msg_in) {
     msg.header.frame_id = "world";
     pub_map.publish(msg);
     is_map_pub = true;
-    std::cout << "map size = " << msg.width << std::endl;
-    ROS_WARN("PUBLISH LOCAL MAP!!!!!!!!!!!!!!!!!!");    
+    // std::cout << "map size = " << msg.width << std::endl;
+    ROS_WARN("[fastlio]recived trigger, pub map");    
 }
 
 double lidar_mean_scantime = 0.0;
@@ -618,6 +645,38 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
     odomAftMapped.child_frame_id = "body";
     odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);// ros::Time().fromSec(lidar_end_time);
     set_posestamp(odomAftMapped.pose);
+    // Eigen::Quaterniond q_tmp(odomAftMapped.pose.pose.orientation.w,odomAftMapped.pose.pose.orientation.x,odomAftMapped.pose.pose.orientation.y,odomAftMapped.pose.pose.orientation.z);
+    // Eigen::Vector3d p_tmp(odomAftMapped.pose.pose.position.x,odomAftMapped.pose.pose.position.y,odomAftMapped.pose.pose.position.z);
+    // Eigen::Matrix3d R_local;
+    // R_local<<0,1,0,
+    //         1,0,0,
+    //         0,0,-1;
+    // Eigen::Matrix3d R_correct;
+    // R_correct=R_local * q_tmp.toRotationMatrix();
+    // Eigen::Quaterniond q_correct(R_correct);
+    // odomAftMapped.pose.pose.orientation.x=q_correct.x();
+    // odomAftMapped.pose.pose.orientation.y=q_correct.y();
+    // odomAftMapped.pose.pose.orientation.z=q_correct.z();
+    // odomAftMapped.pose.pose.orientation.w=q_correct.w();
+
+    // Eigen::Matrix3d R_left, R_right;
+    // R_left << 0, 1, 0,
+    //           1, 0, 0,
+    //           0, 0,-1;
+    // Eigen::Matrix3d R_correct;
+    // R_correct=R_left * q_tmp.toRotationMatrix() * R_left;
+    // Eigen::Quaterniond q_correct(R_correct);
+    // odomAftMapped.pose.pose.orientation.x=q_correct.x();
+    // odomAftMapped.pose.pose.orientation.y=q_correct.y();
+    // odomAftMapped.pose.pose.orientation.z=q_correct.z();
+    // odomAftMapped.pose.pose.orientation.w=q_correct.w();
+
+    // Eigen::Vector3d t_correct;
+    // t_correct = R_left * p_tmp;
+    // odomAftMapped.pose.pose.position.x=t_correct[0]; 
+    // odomAftMapped.pose.pose.position.y=t_correct[1];
+    // odomAftMapped.pose.pose.position.z=t_correct[2];
+
     pubOdomAftMapped.publish(odomAftMapped);
     auto P = kf.get_P();
     for (int i = 0; i < 6; i ++)
@@ -701,12 +760,11 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
         VF(4) pabcd;
         point_selected_surf[i] = false;
-        if (esti_plane(pabcd, points_near, 0.5f))
+        if (esti_plane(pabcd, points_near, 0.1f))
         {
             float pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y + pabcd(2) * point_world.z + pabcd(3);
             float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
 
-            // wxx good:0.7 fastlio:0.9
             if (s > 0.9)
             {
                 point_selected_surf[i] = true;
@@ -785,16 +843,11 @@ int main(int argc, char** argv)
     ros::init(argc, argv, "laserMapping");
     ros::NodeHandle nh;
 
-    FLAGS_stderrthreshold = google::INFO;
-    FLAGS_colorlogtostderr = true;
-    google::InitGoogleLogging(argv[0]);
-    google::ParseCommandLineFlags(&argc, &argv, true);
-
     nh.param<bool>("publish/path_en",path_en, true);
     nh.param<bool>("publish/scan_publish_en",scan_pub_en, true);
     nh.param<bool>("publish/dense_publish_en",dense_pub_en, true);
     nh.param<bool>("publish/scan_bodyframe_pub_en",scan_body_pub_en, true);
-    nh.param<int>("max_iteration",NUM_MAX_ITERATIONS,100);
+    nh.param<int>("max_iteration",NUM_MAX_ITERATIONS,4);
     nh.param<string>("map_file_path",map_file_path,"");
     nh.param<string>("common/lid_topic",lid_topic,"/livox/lidar");
     nh.param<string>("common/imu_topic", imu_topic,"/livox/imu");
@@ -820,22 +873,15 @@ int main(int argc, char** argv)
     nh.param<bool>("runtime_pos_log_enable", runtime_pos_log, 0);
     nh.param<bool>("mapping/extrinsic_est_en", extrinsic_est_en, true);
     nh.param<bool>("pcd_save/pcd_save_en", pcd_save_en, false);
-    nh.param<bool>("pcd_save/load_map_en", load_map_en, false);
-
-    nh.param<float>("regsitraion/map_duration", map_duration, 5.0);
-    nh.param<string>("regsitraion/trigger_topic", trigger_topic,"/trigger_to_drones");
-
-    // nh.param<int>("self_id", self_id, -2);
-    nh.param("self_id", self_id, -1);
-
-    /*** load drone0's map***/
-    std::cout << "load_map_en = " << load_map_en << std::endl;
-    std::cout << "pcd_save_en = " << pcd_save_en << std::endl;
-    std::cout << "self_id = " << self_id << std::endl;
-    
     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
+    nh.param<vector<double>>("mapping/rotation2virtulbody", rotation2virtulbody, vector<double>());
+    nh.param<string>("regsitraion/trigger_topic", trigger_topic,"/trigger_to_drones");
+    nh.param("self_id", self_id, -1);
+    std::cout << "self_id = " << self_id << std::endl;
+
+    virtualLidar_R<<MAT_FROM_ARRAY(rotation2virtulbody);
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
     
     path.header.stamp    = ros::Time::now();
@@ -866,7 +912,6 @@ int main(int argc, char** argv)
     p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));
     p_imu->set_acc_bias_cov(V3D(b_acc_cov, b_acc_cov, b_acc_cov));
 
-    // wxx
     double epsi[23] = {0.001};
     fill(epsi, epsi+23, 0.001);
     kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
@@ -885,29 +930,11 @@ int main(int argc, char** argv)
     else
         cout << "~~~~"<<ROOT_DIR<<" doesn't exist" << endl;
 
-
-
-    /*** initialize the map kdtree from the PCD***/
-    if(!pcd_save_en)
-    {
-        pcl::PCDReader reader;
-        string file_name_map_kdtree = string("map_kdtree.pcd");
-        string all_points_dir_map_kdtree(string(string(ROOT_DIR) + "PCD/") + file_name_map_kdtree);
-        reader.read(all_points_dir_map_kdtree, *featsFromMap);
-
-        ikdtree.set_downsample_param(filter_size_map_min);
-        ikdtree.Build(featsFromMap->points);
-        // featsFromMap->clear();
-    }
-
-
     /*** ROS subscribe initialization ***/
     ros::Subscriber sub_pcl = p_pre->lidar_type == AVIA ? \
-        nh.subscribe(lid_topic, 200000, livox_pcl_cbk, ros::TransportHints().tcpNoDelay()) : \
-        nh.subscribe(lid_topic, 200000, standard_pcl_cbk, ros::TransportHints().tcpNoDelay());
-    ros::Subscriber sub_imu = nh.subscribe(imu_topic, 10, imu_cbk, ros::TransportHints().tcpNoDelay());
-
-    // for lidar registration
+        nh.subscribe(lid_topic, 200000, livox_pcl_cbk) : \
+        nh.subscribe(lid_topic, 200000, standard_pcl_cbk);
+    ros::Subscriber sub_imu = nh.subscribe(imu_topic, 200000, imu_cbk);
     ros::Subscriber sub_reg_trigger = nh.subscribe(trigger_topic, 1, trigger_cbk, ros::TransportHints().tcpNoDelay());
 
     ros::Publisher pubLaserCloudFull = nh.advertise<sensor_msgs::PointCloud2>
@@ -922,36 +949,16 @@ int main(int argc, char** argv)
             ("/Odometry", 100000);
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
-
-    ros::Publisher pub_map_cloud_world = nh.advertise<sensor_msgs::PointCloud2>("/map", 100000);
-    if (self_id == 0) {
-        pub_map = nh.advertise<sensor_msgs::PointCloud2>
-            ("/full_map", 100000); 
-    } else {
-        pub_map = nh.advertise<sensor_msgs::PointCloud2>
-            ("/local_map", 100000);         
-    }
-
-    
-    if (load_map_en)
-    {
-        pcl::PCDReader reader;
-        std::string file_name_map_kdtree = std::string("drone0.pcd");
-        std::string all_points_dir_map_kdtree(std::string(std::string(ROOT_DIR) + "PCD/") + file_name_map_kdtree);
-        pcl::PointCloud<PointType>::Ptr map_points{new pcl::PointCloud<PointType>()};
-        sensor_msgs::PointCloud2 mapCloudmsg;
-        reader.read(all_points_dir_map_kdtree, *map_points);
-
-        pcl::PointCloud<PointType>::Ptr mapCloud(map_points);
-        pcl::toROSMsg(*mapCloud, mapCloudmsg);
-        mapCloudmsg.header.frame_id = "world";
-
-        std::cout << "load PCD map succeed! Please wait 2s for publish the map!" << std::endl;
-        ros::Duration(2.0).sleep();
-        std::cout<< "init prior map succeed!" << std::endl;
-        pub_map_cloud_world.publish(mapCloudmsg);
-    }
-
+            
+    // if (self_id == 0) {
+    //     pub_map = nh.advertise<sensor_msgs::PointCloud2>
+    //         ("/full_map", 100000); 
+    // } else {
+    //     pub_map = nh.advertise<sensor_msgs::PointCloud2>
+    //         ("/local_map", 100000);         
+    // }      
+    pub_map = nh.advertise<sensor_msgs::PointCloud2>
+            ("fullmap", 100000);    
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
@@ -966,8 +973,6 @@ int main(int argc, char** argv)
             {
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
-                global_start_time = ros::Time::now();
-                std::cout << "start_time = " << global_start_time.toSec() << std::endl;
                 flg_first_scan = false;
                 continue;
             }
@@ -994,7 +999,7 @@ int main(int argc, char** argv)
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
             /*** Segment the map in lidar FOV ***/
-            // lasermap_fov_segment();
+            lasermap_fov_segment();
 
             /*** downsample the feature points in a scan ***/
             downSizeFilterSurf.setInputCloud(feats_undistort);
@@ -1031,12 +1036,9 @@ int main(int argc, char** argv)
             normvec->resize(feats_down_size);
             feats_down_world->resize(feats_down_size);
 
-            euler_cur = SO3ToEuler(state_point.rot);
             V3D ext_euler = SO3ToEuler(state_point.offset_R_L_I);
             fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<< " " << state_point.vel.transpose() \
             <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<< endl;
-
-            // std::cout << "init:         " << state_point.pos.transpose()<<"             "<<euler_cur.transpose() << std::endl;
 
             if(0) // If you need to see map point, change to "if(1)"
             {
@@ -1072,14 +1074,7 @@ int main(int argc, char** argv)
 
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
-            if(pcd_save_en)
-            {
-                map_incremental();
-            }
-            else
-            {
-                // publish_map(pubLaserCloudMap);
-            }
+            map_incremental();
             t5 = omp_get_wtime();
             
             /******* Publish points *******/
@@ -1087,14 +1082,14 @@ int main(int argc, char** argv)
             if (scan_pub_en || pcd_save_en)      publish_frame_world(pubLaserCloudFull);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
             // publish_effect_world(pubLaserCloudEffect);
+            // publish_map(pubLaserCloudMap);
 
             /*** Debug variables ***/
-            // if (runtime_pos_log)
-            if (1)
+            if (runtime_pos_log)
             {
                 frame_num ++;
                 kdtree_size_end = ikdtree.size();
-                aver_time_consu = aver_time_consu * (frame_num - 1) / frame_num + (t3 - t0) / frame_num;
+                aver_time_consu = aver_time_consu * (frame_num - 1) / frame_num + (t5 - t0) / frame_num;
                 aver_time_icp = aver_time_icp * (frame_num - 1)/frame_num + (t_update_end - t_update_start) / frame_num;
                 aver_time_match = aver_time_match * (frame_num - 1)/frame_num + (match_time)/frame_num;
                 aver_time_incre = aver_time_incre * (frame_num - 1)/frame_num + (kdtree_incremental_time)/frame_num;
@@ -1112,35 +1107,13 @@ int main(int argc, char** argv)
                 s_plot9[time_log_counter] = aver_time_consu;
                 s_plot10[time_log_counter] = add_point_size;
                 time_log_counter ++;
-                // printf("[ map ]time: IMU + Map + Input Downsample: %0.6f \nicp: %0.6f \nmap incre: %0.6f\n[ ave ]: match: %0.6f \nsolve: %0.6f \nICP: %0.6f \nconstruct H: %0.6f \ntotal without map: %0.6f\n", (t1-t0)*1000,(t3-t1)*1000,(t5-t3)*1000,aver_time_match*1000,aver_time_solve*1000,aver_time_icp*1000,aver_time_const_H_time*1000,aver_time_consu*1000);
-
+                printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n",t1-t0,aver_time_match,aver_time_solve,t3-t1,t5-t3,aver_time_consu,aver_time_icp, aver_time_const_H_time);
                 ext_euler = SO3ToEuler(state_point.offset_R_L_I);
                 fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose()<< " " << ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<<" "<< state_point.vel.transpose() \
                 <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<<" "<<feats_undistort->points.size()<<endl;
                 dump_lio_state_to_log(fp);
-
-                // std::cout << "optimization: " << state_point.pos.transpose()<<"             "<<euler_cur.transpose() << std::endl;
             }
-            // std::cout << " " << std::endl;
         }
-        // std::cout << "flg_first_scan\t" << flg_first_scan << std::endl;
-        // std::cout << "is_map_pub\t" << is_map_pub << std::endl;
-        // if (!flg_first_scan && !is_map_pub && (ros::Time::now() - global_start_time).toSec() > map_duration) {
-        //     std::cout << "now_time = " << ros::Time::now().toSec() << std::endl;
-
-        //     // publish the points from the kd-tree
-        //     PointVector ().swap(ikdtree.PCL_Storage);
-        //     ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
-        //     localMap->clear();
-        //     localMap->points = ikdtree.PCL_Storage;
-        //     sensor_msgs::PointCloud2 msg;
-        //     pcl::toROSMsg(*localMap, msg);
-        //     msg.header.stamp = ros::Time::now();
-        //     msg.header.frame_id = "world";
-        //     pub_map.publish(msg);
-        //     is_map_pub = true;
-        //     ROS_WARN("PUBLISH LOCAL MAP!!!!!!!!!!!!!!!!!!");
-        // }
 
         status = ros::ok();
         rate.sleep();
@@ -1156,16 +1129,6 @@ int main(int argc, char** argv)
         pcl::PCDWriter pcd_writer;
         cout << "current scan saved to /PCD/" << file_name<<endl;
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
-
-        // save the points from the kd-tree
-        PointVector ().swap(ikdtree.PCL_Storage);
-        ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
-        featsFromMap->clear();
-        featsFromMap->points = ikdtree.PCL_Storage;
-        string file_name_map_kdtree = string("map_kdtree.pcd");
-        string all_points_dir_map_kdtree(string(string(ROOT_DIR) + "PCD/") + file_name_map_kdtree);
-        cout << "the map kd-tree saved to /PCD/" << file_name_map_kdtree <<endl;
-        pcd_writer.writeBinary(all_points_dir_map_kdtree, *featsFromMap);
     }
 
     fout_out.close();
@@ -1188,5 +1151,6 @@ int main(int argc, char** argv)
         }
         fclose(fp2);
     }
+
     return 0;
 }

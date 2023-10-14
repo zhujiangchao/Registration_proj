@@ -4,7 +4,7 @@
 	<arg name="rviz_enable" default="true"/>
 	<arg name="rosbag_enable" default="false"/>
 	<arg name="lvx_file_path" default="livox_test.lvx"/>
-	<arg name="bd_list" default="47MDKAA0010267"/>    
+	<arg name="bd_list" default="47MDL6Q0010034"/>    
 	<arg name="xfer_format" default="1"/> 		<!--0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format-->
 	<arg name="multi_topic" default="0"/> 		<!--0-All LiDARs share the same topic, 1-One LiDAR one topic-->
 	<arg name="data_src" default="0"/> 			<!--0-lidar, others-Invalid data src-->

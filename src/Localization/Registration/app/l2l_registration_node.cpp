@@ -31,11 +31,11 @@ using namespace ICPAlgorithm;
 
 typedef pcl::PointXYZI Point_T;
 
-bool g_is_full_map_received = false;
-bool g_is_local_map_received = false;
+bool g_is_other_map_received = false;
+bool g_is_my_map_received = false;
 bool g_is_use_pcd = true;
-pcl::PointCloud<Point_T>::Ptr g_full_map_ptr, g_local_map_ptr;
-string g_icp_pattern, g_full_map_fn;
+pcl::PointCloud<Point_T>::Ptr g_other_map_ptr, g_my_map_ptr;
+string g_icp_pattern, g_other_map_fn;
 std::vector<float> g_init_guess;
 std::vector<float> g_map_range;
 Eigen::Matrix4f g_HT_init_guess = Eigen::Matrix4f::Identity();
@@ -48,11 +48,11 @@ float g_trigger_time;
 float g_resolution;
 nav_msgs::Odometry modify_odom, local_odom, old_odom;
 sensor_msgs::PointCloud2 modify_pc, old_pc;
-sensor_msgs::PointCloud2 full_map_msg;
+sensor_msgs::PointCloud2 other_map_msg;
 
-ros::Subscriber full_map_sub, local_map_sub, lidar_odom_sub, lidar_map_sub;
-ros::Publisher full_map_pub, modify_odom_pub, modify_local_map_pub,\
-              local_odom_pub,old_odom_pub,old_local_map_pub, reg_trigger_pub;
+ros::Subscriber other_map_sub, my_map_sub, lidar_odom_sub, lidar_map_sub;
+ros::Publisher other_map_pub, modify_odom_pub, modify_my_map_pub,\
+              local_odom_pub,old_odom_pub,old_my_map_pub, reg_trigger_pub;
 
 Eigen::Quaterniond euler2quaternion(Eigen::Vector3d euler)
 {
@@ -113,32 +113,33 @@ run(PointCloud<PointXYZI>::Ptr src, PointCloud<PointXYZI>::Ptr tar, Eigen::Matri
   return icp(src, tar, guess, ret, cor, params);  
 }
 
-void full_map_cb(const sensor_msgs::PointCloud2Ptr &msg)
+void other_map_cb(const sensor_msgs::PointCloud2Ptr &msg)
 {
-  ROS_WARN("global_map_cb");
-  pcl::fromROSMsg(*msg, *g_full_map_ptr);
-  full_map_msg = *msg;
-  // pcl::copyPointCloud(*msg, full_map_msg);
+  ROS_WARN("[lidar2lidar_registration_node] other_map_cb");
+  msg->header.frame_id = "world";
+  pcl::fromROSMsg(*msg, *g_other_map_ptr);
+  other_map_msg = *msg;
 
-  if (g_local_map_ptr->size() > 0 && g_full_map_ptr->size() > 0) {
+  if (g_my_map_ptr->size() > 0 && g_other_map_ptr->size() > 0) {
     std::vector<double> ret;        
-    g_HT = run(g_local_map_ptr, g_full_map_ptr, g_HT_init_guess, icp_map[g_icp_pattern], ret);
+    g_HT = run(g_my_map_ptr, g_other_map_ptr, g_HT_init_guess, icp_map[g_icp_pattern], ret);
     local_odom = Matrix4d2odom(g_HT.cast<double>());
     local_odom.header.frame_id = "world";    
-
     std::cout << "rel_p = " << g_HT.block<3,1>(0,3).transpose() << std::endl;
   }
 }
 
 
-void local_map_cb(const sensor_msgs::PointCloud2Ptr &msg)
+void my_map_cb(const sensor_msgs::PointCloud2Ptr &msg)
 {
-  ROS_WARN("local_map_cb");
-  pcl::fromROSMsg(*msg, *g_local_map_ptr);
+  ROS_WARN("[lidar2lidar_registration_node] my_map_cb");
+  msg->header.frame_id = "world";
 
-  if (g_local_map_ptr->size() > 0 && g_full_map_ptr->size() > 0) {
+  pcl::fromROSMsg(*msg, *g_my_map_ptr);
+
+  if (g_my_map_ptr->size() > 0 && g_other_map_ptr->size() > 0) {
     std::vector<double> ret;            
-    g_HT = run(g_local_map_ptr, g_full_map_ptr, g_HT_init_guess, icp_map[g_icp_pattern], ret);
+    g_HT = run(g_my_map_ptr, g_other_map_ptr, g_HT_init_guess, icp_map[g_icp_pattern], ret);
     local_odom = Matrix4d2odom(g_HT.cast<double>());
     local_odom.header.frame_id = "world";
 
@@ -171,7 +172,7 @@ void lidar_pc_cb(const sensor_msgs::PointCloud2Ptr &msg) {
   pcl::toROSMsg(*lidar_pc_global, modify_pc);
   modify_pc.header.frame_id = "world";
 
-  modify_local_map_pub.publish(modify_pc);
+  modify_my_map_pub.publish(modify_pc);
 }
 
 
@@ -219,8 +220,8 @@ int main(int argc, char** argv)
 {
     ros::init(argc, argv, "lidar2lidar_registration_node");
     ros::NodeHandle nh("~");
-    g_full_map_ptr.reset(new pcl::PointCloud<Point_T>);
-    g_local_map_ptr.reset(new pcl::PointCloud<Point_T>);
+    g_other_map_ptr.reset(new pcl::PointCloud<Point_T>);
+    g_my_map_ptr.reset(new pcl::PointCloud<Point_T>);
 
     // step 1: load parameters 
     nh.getParam("init_guess", g_init_guess);
@@ -231,7 +232,7 @@ int main(int argc, char** argv)
     nh.getParam("ransac_iter", g_ransac_iter);
     nh.getParam("max_cor_dis", g_max_cor_dis);
     nh.getParam("is_use_pcd", g_is_use_pcd);
-    nh.getParam("full_map_fn", g_full_map_fn);
+    nh.getParam("other_map_fn", g_other_map_fn);
     nh.getParam("trigger_time", g_trigger_time);
     nh.getParam("resolution", g_resolution);
 
@@ -252,37 +253,32 @@ int main(int argc, char** argv)
 
     // step 2: register subscriber and publisher
 
-
-
     reg_trigger_pub = nh.advertise<std_msgs::Empty>("/trigger_to_drones", 1);
 
-    full_map_pub = nh.advertise<sensor_msgs::PointCloud2>("/full_map_test", 1);
+    other_map_pub = nh.advertise<sensor_msgs::PointCloud2>("/other_map_test", 1);
     local_odom_pub = nh.advertise<nav_msgs::Odometry>("/local_ref",1);
 
     modify_odom_pub = nh.advertise<nav_msgs::Odometry>("Odometry_new",1);
-    modify_local_map_pub = nh.advertise<sensor_msgs::PointCloud2>("cloud_new",1);
+    modify_my_map_pub = nh.advertise<sensor_msgs::PointCloud2>("cloud_new",1);
     
     if (!g_is_use_pcd) {
-      full_map_sub = nh.subscribe("/full_map", 1, full_map_cb, ros::TransportHints().tcpNoDelay());      
+      other_map_sub = nh.subscribe("/other_map", 1, other_map_cb, ros::TransportHints().tcpNoDelay());      
     } else {
-      if (pcl::io::loadPCDFile<Point_T>(g_full_map_fn, *g_full_map_ptr) == -1)
+      if (pcl::io::loadPCDFile<Point_T>(g_other_map_fn, *g_other_map_ptr) == -1)
       {
-          ROS_ERROR("full map pcd load fail!!!");
+          ROS_ERROR("other map pcd load fail!!!");
           return 0;
       }
-      pcl_downSampling(g_full_map_ptr);
+      pcl_downSampling(g_other_map_ptr);
 
-      cut_mapxyz(g_full_map_ptr, g_map_range);
+      cut_mapxyz(g_other_map_ptr, g_map_range);
             
-      pcl::toROSMsg(*g_full_map_ptr, full_map_msg);
-      full_map_msg.header.frame_id = "world";
-
-      g_is_full_map_received = true;
-      
+      pcl::toROSMsg(*g_other_map_ptr, other_map_msg);
+      other_map_msg.header.frame_id = "world";
+      g_is_other_map_received = true;
     }
 
-    local_map_sub = nh.subscribe("/local_map", 1, local_map_cb, ros::TransportHints().tcpNoDelay());
-
+    my_map_sub = nh.subscribe("my_map", 1, my_map_cb, ros::TransportHints().tcpNoDelay());
     lidar_odom_sub = nh.subscribe("Odometry_old", 10, lidar_odom_cb, ros::TransportHints().tcpNoDelay());
     lidar_map_sub = nh.subscribe("cloud_old", 10, lidar_pc_cb, ros::TransportHints().tcpNoDelay());
 
@@ -296,11 +292,11 @@ int main(int argc, char** argv)
       if ((ros::Time::now() - start_time).toSec() > g_trigger_time && !trigger_flag) {
         std_msgs::Empty msg;
         reg_trigger_pub.publish(msg);
-        ROS_WARN("trigger!!!");
+        ROS_WARN("[lidar2lidar_registration_node]trigger!!!");
         trigger_flag = true;
       }
 
-      full_map_pub.publish(full_map_msg);
+      other_map_pub.publish(other_map_msg);
 
       rate.sleep();
       ros::spinOnce();
