@@ -20,9 +20,11 @@ ros::Subscriber other_odoms_sub_, one_traj_sub_, joystick_sub_, goal_sub_, objec
 ros::Subscriber full_map_sub_, trigger_sub_, other_map_sub_;
 
 ros::Publisher other_odoms_pub_, one_traj_pub_, joystick_pub_, goal_pub_, object_odoms_pub_;
-ros::Publisher other_map_pub_;
 ros::Subscriber goal_exploration_sub_,star_cvx_sub_,frontier_sub_;
-ros::Publisher goal_exploration_pub_,star_cvx_pub_,frontier_pub_, full_map_pub_, trigger_pub_;
+ros::Publisher goal_exploration_pub_,star_cvx_pub_,frontier_pub_, other_map_pub_, trigger_pub_;
+std::vector<ros::Publisher> odom_pub_vec_;
+std::vector<ros::Publisher> map_pub_vec_;
+
 int self_id_;
 int self_id_in_bridge_;
 int drone_num_;
@@ -104,13 +106,15 @@ void register_callbak_to_all_drones(string topic_name, function<void(int, ros::S
 
 void full_map_cb(const sensor_msgs::PointCloud2Ptr &msg)
 {
-  if (!is_map_received && (self_id_in_bridge_ == 0)) {
-    ROS_WARN("map received!!!");
-    send_to_all_drone_except_me("/full_map",*msg);// Only send to drones.
-    ROS_WARN("map send finish!!!");
+  msg->header.frame_id = string("drone_") + std::to_string(self_id_);  
 
-    is_map_received = true;
+  if (self_id_in_bridge_ == 0) {
+    ROS_WARN("[bridge]my map received, send to drones");
+    send_to_all_drone_except_me("/full_map",*msg);// Only send to drones.   
   }
+  ROS_WARN("[bridge]send to groundstation");
+  send_to_all_groundstation_except_me("/full_map",*msg);// Only send to ground stations.
+  ROS_WARN("my map send finish!!!");  
 }
 
 // Here is callback from local topic.
@@ -213,6 +217,11 @@ void odom_bridge_cb(int ID, ros::SerializedMessage& m)
 {
   nav_msgs::Odometry odom_msg_;
   ros::serialization::deserializeMessage(m,odom_msg_);
+  string child_frame = odom_msg_.child_frame_id;
+  int drone_id =  stoi(child_frame.substr(6));
+  odom_pub_vec_[drone_id].publish(odom_msg_);
+  // msg->child_frame_id; = string("drone_") + std::to_string(self_id_);
+
   other_odoms_pub_.publish(odom_msg_);
 }
 
@@ -265,13 +274,23 @@ void frontier_bridge_cb(int ID, ros::SerializedMessage& m)
   frontier_pub_.publish(point_msg_);
 }
 
-void fullmap_bridge_cb(int ID, ros::SerializedMessage& m)
+void map_bridge_cb(int ID, ros::SerializedMessage& m)
 {
   sensor_msgs::PointCloud2 point_msg_;
   ros::serialization::deserializeMessage(m,point_msg_);
-  std::cout << "map received!!!" << std::endl;
   std::cout << "map size = " << point_msg_.width << std::endl;
-  full_map_pub_.publish(point_msg_);
+
+  if (is_groundstation_) {
+    ROS_WARN("[bridger] my map recived, pub map");
+    string frame = point_msg_.header.frame_id;
+    int drone_id =  stoi(frame.substr(6));
+    point_msg_.header.frame_id = "world";
+    map_pub_vec_[drone_id].publish(point_msg_);
+  } else {
+    ROS_WARN("[bridger] my map recived, pub other map");
+    point_msg_.header.frame_id = "world";
+    other_map_pub_.publish(point_msg_);
+  }
 }
 
 void trigger_bridge_cb(int ID, ros::SerializedMessage& m)
@@ -311,6 +330,14 @@ int main(int argc, char **argv)
     nh.param((i < drone_num_ ? "drone_ip_" + to_string(i) : "ground_station_ip_" + to_string(i-drone_num_)), ip_list_[i], string("127.0.0.1"));
     id_list_[i]=i;
   }  
+  for (int i = 0; i < drone_num_; i++) {
+    ros::Publisher odom_pub_tmp = nh.advertise<nav_msgs::Odometry>("/odom_"+to_string(i), 10);
+    odom_pub_vec_.push_back(odom_pub_tmp);
+
+    ros::Publisher map_pub_tmp = nh.advertise<sensor_msgs::PointCloud2>("/map_"+to_string(i), 10);
+    map_pub_vec_.push_back(map_pub_tmp);         
+  }
+
   self_id_in_bridge_ = self_id_;
 
   if (is_groundstation_)
@@ -350,19 +377,13 @@ int main(int argc, char **argv)
   goal_pub_ = nh.advertise<quadrotor_msgs::GoalSet>("/goal_brig2plner", 100);
   register_callbak_to_all_groundstation("/goal",goal_bridge_cb);
 
-  full_map_sub_ = nh.subscribe("/full_map", 1, full_map_cb, ros::TransportHints().tcpNoDelay());
-  full_map_pub_ = nh.advertise<sensor_msgs::PointCloud2>("/full_map", 100);
-  register_callbak_to_all_drones("/full_map", fullmap_bridge_cb);
+  full_map_sub_ = nh.subscribe("my_map", 1, full_map_cb, ros::TransportHints().tcpNoDelay());
+  other_map_pub_ = nh.advertise<sensor_msgs::PointCloud2>("/other_map", 100);
+  bridge->register_callback_for_all("/full_map", map_bridge_cb);
 
   trigger_sub_ = nh.subscribe("/trigger_from_ground", 1, trigger_sub_cb, ros::TransportHints().tcpNoDelay());
   trigger_pub_ = nh.advertise<std_msgs::Empty>("/trigger_to_drones", 100);
   register_callbak_to_all_groundstation("/trigger", trigger_bridge_cb);
-
-
-  other_map_sub_ = nh.subscribe("map_from_drones", 10, map_sub_cb, ros::TransportHints().tcpNoDelay());
-  other_map_pub_ = nh.advertise<sensor_msgs::PointCloud2>("/maps_to_ground", 10);
-  register_callbak_to_all_drones("/vis_map",vismap_bridge_cb);  
-
 
   // goal_exploration_sub_ = nh.subscribe("/goal_with_id", 100, goal_exploration_sub_udp_cb, ros::TransportHints().tcpNoDelay());
   // goal_exploration_pub_ = nh.advertise<quadrotor_msgs::GoalSet>("/goal_with_id_to_planner", 100);

@@ -1,7 +1,11 @@
 <launch>
 <!-- Launch file for Livox AVIA LiDAR -->
+
+	<arg name="drone_id" default="0"/>
+
 	<rosparam command="load" file="$(find fast_lio)/config/avia.yaml" />
 
+	<param name="self_id" type="int" value="$(arg drone_id)"/>  
 	<param name="feature_extract_enable" type="bool" value="0"/>
 	<param name="point_filter_num" type="int" value="10"/>
 	<param name="max_iteration" type="int" value="3" />
@@ -9,20 +13,22 @@
 	<param name="filter_size_map" type="double" value="0.5" />
 	<param name="cube_side_length" type="double" value="1000" />
 	<param name="runtime_pos_log_enable" type="bool" value="0" />
-    <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" /> 
-
+	
+	<remap from="fullmap" to="/drone_$(arg drone_id)_map"/>
+    <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" />
 
 	<!--user configure parameters for ros start-->
 	<arg name="lvx_file_path" default="livox_test.lvx"/>
 	<!-- <arg name="bd_list" default="47MDKAA0010267"/>  -->
-	<arg name="bd_list" default="47MDKAA0010912"/>    
+	<arg name="bd_list" default="47MDL6Q0010034"/>    
 
 	<arg name="xfer_format" default="1"/> 		<!--0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format-->
 	<arg name="multi_topic" default="0"/> 		<!--0-All LiDARs share the same topic, 1-One LiDAR one topic-->
 	<arg name="data_src" default="0"/> 			<!--0-lidar, others-Invalid data src-->
-	<arg name="publish_freq" default="20.0"/> 	<!--freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.-->
+	<arg name="publish_freq" default="10.0"/> 	<!--freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.-->
 	<arg name="output_type" default="0"/>
 	<arg name="rviz_enable" default="false"/>
+	<arg name="ekf_enable" default="false"/>
 	<arg name="rosbag_enable" default="true"/>
 	<arg name="cmdline_arg" default="$(arg bd_list)"/>
 	<arg name="msg_frame_id" default="livox_frame"/>
@@ -54,6 +60,7 @@
 	</group>
 
 
+	<group if="$(arg ekf_enable)">
 	    <node pkg="ekf" type="ekf" name="ekf" output="screen">
         <remap from="~imu" to="/mavros/imu/data"/>
         <!-- <remap from="~imu" to="/livox/imu"/> -->
@@ -67,9 +74,9 @@
         <rosparam file="$(find ekf)/launch/PX4_vio_drone.yaml" command="load" />
 
         <!--body in IMU frame-->>
-        <param name="imu_trans_x" type="double" value="-0.0"/> 
+        <param name="imu_trans_x" type="double" value="0.0"/> 
         <param name="imu_trans_y" type="double" value="0.0"/> 
-        <param name="imu_trans_z" type="double" value="-0.0"/> 
+        <param name="imu_trans_z" type="double" value="0.0"/> 
 
         <!-- Qt -->
         <param name="gyro_cov" type="double" value="0.2"/> 
@@ -78,6 +85,7 @@
         <param name="position_cov" type="double" value="0.0005"/>
         <param name="q_rp_cov" type="double" value="0.01"/>
         <param name="q_yaw_cov" type="double" value="0.01"/>   
-
     </node>
+	</group>
+
 </launch>

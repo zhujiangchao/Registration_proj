@@ -1632,7 +1632,6 @@ public:
 		vectorized_state dx_new = vectorized_state::Zero();
 		for(int i=-1; i<maximum_iter; i++)
 		{
-			// std::cout << i << std::endl;
 			dyn_share.valid = true;	
 			h_dyn_share(x_, dyn_share);
 
@@ -1832,7 +1831,6 @@ public:
 				dyn_share.converge = true;
 			}
 
-			// wxx good:5, fastlio:1
 			if(t > 1 || i == maximum_iter - 1)
 			{
 				L_ = P_;
