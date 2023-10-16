@@ -36,13 +36,14 @@ bool g_is_my_map_received = false;
 bool g_is_use_pcd = true;
 pcl::PointCloud<Point_T>::Ptr g_other_map_ptr, g_my_map_ptr;
 string g_icp_pattern, g_other_map_fn;
+
 std::vector<float> g_init_guess;
 std::vector<float> g_map_range;
 Eigen::Matrix4f g_HT_init_guess = Eigen::Matrix4f::Identity();
 Eigen::Matrix4f g_HT = Eigen::Matrix4f::Identity();
 Eigen::Matrix4f g_HT_body_wrt_w0 = Eigen::Matrix4f::Identity();
 
-int g_icp_iter, g_ransac_iter, g_neibor_k;
+int g_icp_iter, g_ransac_iter, g_neibor_k, g_drone_id;
 float g_max_cor_dis;
 float g_trigger_time;
 float g_resolution;
@@ -235,12 +236,14 @@ int main(int argc, char** argv)
     nh.getParam("other_map_fn", g_other_map_fn);
     nh.getParam("trigger_time", g_trigger_time);
     nh.getParam("resolution", g_resolution);
+    nh.getParam("drone_id", g_drone_id);
 
     g_init_guess[3] = g_init_guess[3] * M_PI / 180;
     g_init_guess[4] = g_init_guess[4] * M_PI / 180;
     g_init_guess[5] = g_init_guess[5] * M_PI / 180;
 
     std::cout << "is_use_pcd = " << g_is_use_pcd << std::endl;
+    std::cout << "drone_id = " << g_drone_id << std::endl;
 
     Eigen::Vector3d eular_init_guess;
     eular_init_guess = Eigen::Vector3d(g_init_guess[3], g_init_guess[4], g_init_guess[5]);
@@ -254,6 +257,7 @@ int main(int argc, char** argv)
     // step 2: register subscriber and publisher
 
     reg_trigger_pub = nh.advertise<std_msgs::Empty>("/trigger_to_drones", 1);
+    local_odom_pub = nh.advertise<nav_msgs::Odometry>("/local_ref",1);       
 
     other_map_pub = nh.advertise<sensor_msgs::PointCloud2>("/other_map_test", 1);
     local_odom_pub = nh.advertise<nav_msgs::Odometry>("/local_ref",1);
@@ -281,7 +285,6 @@ int main(int argc, char** argv)
     my_map_sub = nh.subscribe("my_map", 1, my_map_cb, ros::TransportHints().tcpNoDelay());
     lidar_odom_sub = nh.subscribe("Odometry_old", 10, lidar_odom_cb, ros::TransportHints().tcpNoDelay());
     lidar_map_sub = nh.subscribe("cloud_old", 10, lidar_pc_cb, ros::TransportHints().tcpNoDelay());
-
     ros::Rate rate(10);
 
     ros::Time start_time = ros::Time::now();
