@@ -23,107 +23,63 @@
 #include <nav_msgs/Odometry.h>
 #include <std_msgs/Empty.h>
 
-#include "utils/registration.h"
+#include "Registration/registration_utils.hpp"
 
-using namespace pcl;
 using namespace std;
-using namespace ICPAlgorithm;
+using namespace RegistrationAlgorithm;
 
-typedef pcl::PointXYZI Point_T;
+typedef pcl::PointXYZ PointType;
 
+// global flag
 bool g_is_other_map_received = false;
 bool g_is_my_map_received = false;
+
+// other map point_clouds
 bool g_is_use_pcd = true;
-pcl::PointCloud<Point_T>::Ptr g_other_map_ptr, g_my_map_ptr;
-string g_icp_pattern, g_other_map_fn;
+string g_other_map_fn;
+std::vector<float> g_map_size_vec;
+pcl::PointCloud<PointType>::Ptr g_other_map_ptr;
+float g_resolution, g_radiusfilter_radius;
+int g_radiusfilter_neibors;
 
-std::vector<float> g_init_guess;
-std::vector<float> g_map_range;
-Eigen::Matrix4f g_HT_init_guess = Eigen::Matrix4f::Identity();
-Eigen::Matrix4f g_HT = Eigen::Matrix4f::Identity();
-Eigen::Matrix4f g_HT_body_wrt_w0 = Eigen::Matrix4f::Identity();
+// my map point clouds
+pcl::PointCloud<PointType>::Ptr g_my_map_ptr;
 
-int g_icp_iter, g_ransac_iter, g_neibor_k, g_drone_id;
-float g_max_cor_dis;
+// registration params
+string g_reg_pattern;
+int g_reg_iter, g_ransac_iter, g_neibor_k, g_drone_id;
+float g_trans_eps, g_fitness_eps, g_max_cor_dis, g_ndt_resolution, g_ndt_stepsize;
 float g_trigger_time;
-float g_resolution;
+std::vector<double> g_params_vec;
+std::vector<float> g_init_guess_vec;
+
+// ros msgs
 nav_msgs::Odometry modify_odom, local_odom, old_odom;
 sensor_msgs::PointCloud2 modify_pc, old_pc;
 sensor_msgs::PointCloud2 other_map_msg;
 
+// Subscriber and Publisher
 ros::Subscriber other_map_sub, my_map_sub, lidar_odom_sub, lidar_map_sub;
 ros::Publisher other_map_pub, modify_odom_pub, modify_my_map_pub,\
               local_odom_pub,old_odom_pub,old_my_map_pub, reg_trigger_pub;
 
-Eigen::Quaterniond euler2quaternion(Eigen::Vector3d euler)
-{
-  double cr = cos(euler(0)/2);
-  double sr = sin(euler(0)/2);
-  double cp = cos(euler(1)/2);
-  double sp = sin(euler(1)/2);
-  double cy = cos(euler(2)/2);
-  double sy = sin(euler(2)/2);
-  Eigen::Quaterniond q;
-  q.w() = cr*cp*cy + sr*sp*sy;
-  q.x() = sr*cp*cy - cr*sp*sy;
-  q.y() = cr*sp*cy + sr*cp*sy;
-  q.z() = cr*cp*sy - sr*sp*cy;
-  return q; 
-}
-
-Eigen::Matrix4d odom2Matrix4d(const nav_msgs::Odometry &odom) {
-  Eigen::Matrix4d HT = Eigen::Matrix4d::Identity();
-  Eigen::Vector3d p(odom.pose.pose.position.x,\
-                    odom.pose.pose.position.y,\
-                    odom.pose.pose.position.z);
-
-  Eigen::Quaterniond q(odom.pose.pose.orientation.w,\
-                       odom.pose.pose.orientation.x,\
-                       odom.pose.pose.orientation.y,\
-                       odom.pose.pose.orientation.z);
-  HT.block<3, 1>(0, 3) = p;
-  HT.block<3, 3>(0, 0) = q.toRotationMatrix();
-  return HT;
-}
-
-nav_msgs::Odometry Matrix4d2odom(const Eigen::Matrix4d &HT) {
-  nav_msgs::Odometry odom;
-  Eigen::Vector3d p = HT.block<3, 1>(0, 3);
-  Eigen::Quaterniond q(HT.block<3, 3>(0, 0));
-  odom.pose.pose.position.x = p[0];
-  odom.pose.pose.position.y = p[1];
-  odom.pose.pose.position.z = p[2];
-  odom.pose.pose.orientation.w = q.w();
-  odom.pose.pose.orientation.x = q.x();
-  odom.pose.pose.orientation.y = q.y();
-  odom.pose.pose.orientation.z = q.z();
-  
-  return odom;
-}
-
-Eigen::Matrix4f
-run(PointCloud<PointXYZI>::Ptr src, PointCloud<PointXYZI>::Ptr tar, Eigen::Matrix4f guess, ICPFunPtr icp, std::vector<double> &ret)
-{
-  std::vector<double> params;
-  pcl::Correspondences cor;
-  params.push_back(g_neibor_k);
-  params.push_back(g_max_cor_dis);
-  params.push_back(g_icp_iter);
-  params.push_back(g_ransac_iter);   
-
-  return icp(src, tar, guess, ret, cor, params);  
-}
+// tranformation
+Eigen::Matrix4f g_HT_init_guess = Eigen::Matrix4f::Identity();
+Eigen::Matrix4f g_HT = Eigen::Matrix4f::Identity();              
 
 void other_map_cb(const sensor_msgs::PointCloud2Ptr &msg)
 {
-  ROS_WARN("[lidar2lidar_registration_node] other_map_cb");
+  ROS_WARN("[l2l_registration_node] other_map_cb");
   msg->header.frame_id = "world";
   pcl::fromROSMsg(*msg, *g_other_map_ptr);
   other_map_msg = *msg;
 
   if (g_my_map_ptr->size() > 0 && g_other_map_ptr->size() > 0) {
     std::vector<double> ret;        
-    g_HT = run(g_my_map_ptr, g_other_map_ptr, g_HT_init_guess, icp_map[g_icp_pattern], ret);
+    pcl::Correspondences cor;  
+	g_HT = RegFunMap<PointType, PointType>[g_reg_pattern](\
+					g_my_map_ptr, g_other_map_ptr, g_HT_init_guess.cast<float>(), g_params_vec, ret, cor);            
+
     local_odom = Matrix4d2odom(g_HT.cast<double>());
     local_odom.header.frame_id = "world";    
     std::cout << "rel_p = " << g_HT.block<3,1>(0,3).transpose() << std::endl;
@@ -133,14 +89,18 @@ void other_map_cb(const sensor_msgs::PointCloud2Ptr &msg)
 
 void my_map_cb(const sensor_msgs::PointCloud2Ptr &msg)
 {
-  ROS_WARN("[lidar2lidar_registration_node] my_map_cb");
+  ROS_WARN("[l2l_registration_node] my_map_cb");
+
   msg->header.frame_id = "world";
 
   pcl::fromROSMsg(*msg, *g_my_map_ptr);
 
   if (g_my_map_ptr->size() > 0 && g_other_map_ptr->size() > 0) {
-    std::vector<double> ret;            
-    g_HT = run(g_my_map_ptr, g_other_map_ptr, g_HT_init_guess, icp_map[g_icp_pattern], ret);
+    std::vector<double> ret; 
+    pcl::Correspondences cor;  
+	  g_HT = RegFunMap<PointType, PointType>[g_reg_pattern](\
+					g_my_map_ptr, g_other_map_ptr, g_HT_init_guess.cast<float>(), g_params_vec, ret, cor);            
+
     local_odom = Matrix4d2odom(g_HT.cast<double>());
     local_odom.header.frame_id = "world";
 
@@ -148,143 +108,119 @@ void my_map_cb(const sensor_msgs::PointCloud2Ptr &msg)
   }
 }
 
-void lidar_odom_cb(const nav_msgs::OdometryPtr &msg) {
-  old_odom = *msg;
-  old_odom.header.frame_id = "world";
+// void lidar_odom_cb(const nav_msgs::OdometryPtr &msg) {
+//   old_odom = *msg;
+//   old_odom.header.frame_id = "world";
 
-  Eigen::Matrix4d HT_body_wrt_local = odom2Matrix4d(*msg);
-  Eigen::Matrix4d HT_body_wrt_global = g_HT.cast<double>() * HT_body_wrt_local;
+//   Eigen::Matrix4d HT_body_wrt_local = odom2Matrix4d(*msg);
+//   Eigen::Matrix4d HT_body_wrt_global = g_HT.cast<double>() * HT_body_wrt_local;
 
-  modify_odom = Matrix4d2odom(HT_body_wrt_global);
-  modify_odom.header.frame_id = "world";
+//   modify_odom = Matrix4d2odom(HT_body_wrt_global);
+//   modify_odom.header.frame_id = "world";
 
-  modify_odom_pub.publish(modify_odom);
+//   modify_odom_pub.publish(modify_odom);
 
-}
+// }
 
-void lidar_pc_cb(const sensor_msgs::PointCloud2Ptr &msg) {
-  old_pc = *msg;
-  old_pc.header.frame_id = "world";
+// void lidar_pc_cb(const sensor_msgs::PointCloud2Ptr &msg) {
+//   old_pc = *msg;
+//   old_pc.header.frame_id = "world";
 
-  pcl::PointCloud<Point_T>::Ptr lidar_pc_local(new pcl::PointCloud<Point_T>);
-  pcl::PointCloud<Point_T>::Ptr lidar_pc_global(new pcl::PointCloud<Point_T>);  
-  pcl::fromROSMsg(*msg, *lidar_pc_local);
-  pcl::transformPointCloud(*lidar_pc_local, *lidar_pc_global, g_HT);
-  pcl::toROSMsg(*lidar_pc_global, modify_pc);
-  modify_pc.header.frame_id = "world";
+//   pcl::PointCloud<PointType>::Ptr lidar_pc_local(new pcl::PointCloud<PointType>);
+//   pcl::PointCloud<PointType>::Ptr lidar_pc_global(new pcl::PointCloud<PointType>);  
+//   pcl::fromROSMsg(*msg, *lidar_pc_local);
+//   pcl::transformPointCloud(*lidar_pc_local, *lidar_pc_global, g_HT);
+//   pcl::toROSMsg(*lidar_pc_global, modify_pc);
+//   modify_pc.header.frame_id = "world";
 
-  modify_my_map_pub.publish(modify_pc);
-}
+//   modify_my_map_pub.publish(modify_pc);
+// }
 
 
-void pcl_downSampling(pcl::PointCloud<Point_T>::Ptr &cloud_ds) 
-{
-  pcl::PointCloud<Point_T>::Ptr cloud_tmp(new pcl::PointCloud<Point_T>);
-
-  std::cout << "before downsampling: " << cloud_ds->size() << std::endl;
-
-  // 创建VoxelGrid滤波器对象
-  pcl::VoxelGrid<Point_T> sor;
-  sor.setInputCloud(cloud_ds);  // 设置输入点云
-  sor.setLeafSize(g_resolution, g_resolution, g_resolution);  // 设置体素的大小（降采样的分辨率）
-
-  // 执行降采样滤波
-  sor.filter(*cloud_tmp);
-
-  *cloud_ds = *cloud_tmp;
-  //
-  std::cout << "after downsampling: " << cloud_ds->size() << std::endl;
-}
-
-void cut_mapxyz(pcl::PointCloud<Point_T>::Ptr &cloud, std::vector<float> size) 
-{
-  pcl::ConditionAnd<Point_T>::Ptr range_cond(new pcl::ConditionAnd<Point_T>);//实例化条件指针
-
-  range_cond->addComparison(pcl::FieldComparison<Point_T>::ConstPtr (new pcl::FieldComparison<Point_T>("x", pcl::ComparisonOps::GT,size[0])));
-  range_cond->addComparison(pcl::FieldComparison<Point_T>::ConstPtr (new pcl::FieldComparison<Point_T>("x", pcl::ComparisonOps::LT,size[1])));
-
-  range_cond->addComparison(pcl::FieldComparison<Point_T>::ConstPtr (new pcl::FieldComparison<Point_T>("y", pcl::ComparisonOps::GT,size[2])));
-  range_cond->addComparison(pcl::FieldComparison<Point_T>::ConstPtr (new pcl::FieldComparison<Point_T>("y", pcl::ComparisonOps::LT,size[3])));
-
-  range_cond->addComparison(pcl::FieldComparison<Point_T>::ConstPtr (new pcl::FieldComparison<Point_T>("z", pcl::ComparisonOps::GT,size[4])));
-  range_cond->addComparison(pcl::FieldComparison<Point_T>::ConstPtr (new pcl::FieldComparison<Point_T>("z", pcl::ComparisonOps::LT,size[5])));
-
-  //build the filter
-  pcl::ConditionalRemoval<Point_T> condrem;
-  condrem.setCondition(range_cond);
-  condrem.setInputCloud(cloud);
-  condrem.setKeepOrganized(false);//保存原有点云结结构就是点的数目没有减少，采用nan代替了
-  condrem.filter(*cloud);
-}
 
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "lidar2lidar_registration_node");
+    ros::init(argc, argv, "l2l_registration_node");
     ros::NodeHandle nh("~");
-    g_other_map_ptr.reset(new pcl::PointCloud<Point_T>);
-    g_my_map_ptr.reset(new pcl::PointCloud<Point_T>);
+    g_other_map_ptr.reset(new pcl::PointCloud<PointType>);
+    g_my_map_ptr.reset(new pcl::PointCloud<PointType>);
 
     // step 1: load parameters 
-    nh.getParam("init_guess", g_init_guess);
-    nh.getParam("map_range", g_map_range);    
-    nh.getParam("icp_pattern", g_icp_pattern);
-    nh.getParam("g_neibor_k", g_neibor_k);
-    nh.getParam("icp_iter", g_icp_iter);
-    nh.getParam("ransac_iter", g_ransac_iter);
-    nh.getParam("max_cor_dis", g_max_cor_dis);
+    nh.getParam("drone_id", g_drone_id);    
+    nh.getParam("init_guess", g_init_guess_vec);
+    nh.getParam("map_size", g_map_size_vec);  
     nh.getParam("is_use_pcd", g_is_use_pcd);
-    nh.getParam("other_map_fn", g_other_map_fn);
-    nh.getParam("trigger_time", g_trigger_time);
-    nh.getParam("resolution", g_resolution);
-    nh.getParam("drone_id", g_drone_id);
+    nh.getParam("other_map_fn", g_other_map_fn);    
+    nh.getParam("resolution", g_resolution);    
+    nh.getParam("radiusfilter_neibors", g_radiusfilter_neibors);
+    nh.getParam("radiusfilter_radius", g_radiusfilter_radius); 
 
-    g_init_guess[3] = g_init_guess[3] * M_PI / 180;
-    g_init_guess[4] = g_init_guess[4] * M_PI / 180;
-    g_init_guess[5] = g_init_guess[5] * M_PI / 180;
+    nh.getParam("trigger_time", g_trigger_time);
+
+    nh.getParam("reg_pattern", g_reg_pattern);  
+    nh.getParam("reg_iter", g_reg_iter);
+    nh.getParam("trans_eps", g_trans_eps);
+    nh.getParam("fitness_eps", g_fitness_eps);
+    nh.getParam("max_cor_dis", g_max_cor_dis);
+    nh.getParam("ransac_iter", g_ransac_iter);
+    nh.getParam("neibor_k", g_neibor_k);    
+    nh.getParam("ndt_resolution", g_ndt_resolution);
+    nh.getParam("ndt_stepsize", g_ndt_stepsize);
+
+    g_init_guess_vec[3] = g_init_guess_vec[3] * M_PI / 180;
+    g_init_guess_vec[4] = g_init_guess_vec[4] * M_PI / 180;
+    g_init_guess_vec[5] = g_init_guess_vec[5] * M_PI / 180;
 
     std::cout << "is_use_pcd = " << g_is_use_pcd << std::endl;
     std::cout << "drone_id = " << g_drone_id << std::endl;
 
     Eigen::Vector3d eular_init_guess;
-    eular_init_guess = Eigen::Vector3d(g_init_guess[3], g_init_guess[4], g_init_guess[5]);
+    eular_init_guess = Eigen::Vector3d(g_init_guess_vec[3], g_init_guess_vec[4], g_init_guess_vec[5]);
     Eigen::Quaternionf q_init_guess = euler2quaternion(eular_init_guess).cast<float>();
 
-    g_HT_init_guess.block<3,1>(0,3) = Eigen::Vector3f(g_init_guess[0], g_init_guess[1], g_init_guess[2]);
+    g_HT_init_guess.block<3,1>(0,3) = Eigen::Vector3f(g_init_guess_vec[0], g_init_guess_vec[1], g_init_guess_vec[2]);
     g_HT_init_guess.block<3,3>(0,0) = q_init_guess.toRotationMatrix();
 
     g_HT = g_HT_init_guess;
 
+	g_params_vec.push_back(g_reg_iter);
+	g_params_vec.push_back(g_trans_eps);
+	g_params_vec.push_back(g_fitness_eps);
+	g_params_vec.push_back(g_max_cor_dis);
+	g_params_vec.push_back(g_ransac_iter);
+
+	g_params_vec.push_back(g_neibor_k);	
+
+	g_params_vec.push_back(g_ndt_resolution);
+	g_params_vec.push_back(g_ndt_stepsize);	
+
     // step 2: register subscriber and publisher
-
-    reg_trigger_pub = nh.advertise<std_msgs::Empty>("/trigger_to_drones", 1);
-    local_odom_pub = nh.advertise<nav_msgs::Odometry>("/local_ref",1);       
-
-    other_map_pub = nh.advertise<sensor_msgs::PointCloud2>("/other_map_test", 1);
-    local_odom_pub = nh.advertise<nav_msgs::Odometry>("/local_ref",1);
-
-    modify_odom_pub = nh.advertise<nav_msgs::Odometry>("Odometry_new",1);
-    modify_my_map_pub = nh.advertise<sensor_msgs::PointCloud2>("cloud_new",1);
-    
+    my_map_sub = nh.subscribe("my_map", 1, my_map_cb, ros::TransportHints().tcpNoDelay());
     if (!g_is_use_pcd) {
       other_map_sub = nh.subscribe("/other_map", 1, other_map_cb, ros::TransportHints().tcpNoDelay());      
     } else {
-      if (pcl::io::loadPCDFile<Point_T>(g_other_map_fn, *g_other_map_ptr) == -1)
+      if (pcl::io::loadPCDFile<PointType>(g_other_map_fn, *g_other_map_ptr) == -1)
       {
           ROS_ERROR("other map pcd load fail!!!");
           return 0;
       }
-      pcl_downSampling(g_other_map_ptr);
+      pcl_downSampling<PointType>(g_other_map_ptr, g_resolution);
 
-      cut_mapxyz(g_other_map_ptr, g_map_range);
+      cut_mapxyz<PointType>(g_other_map_ptr, g_map_size_vec);
             
       pcl::toROSMsg(*g_other_map_ptr, other_map_msg);
       other_map_msg.header.frame_id = "world";
       g_is_other_map_received = true;
     }
+    reg_trigger_pub = nh.advertise<std_msgs::Empty>("/trigger_to_drones", 1);
 
-    my_map_sub = nh.subscribe("my_map", 1, my_map_cb, ros::TransportHints().tcpNoDelay());
-    lidar_odom_sub = nh.subscribe("Odometry_old", 10, lidar_odom_cb, ros::TransportHints().tcpNoDelay());
-    lidar_map_sub = nh.subscribe("cloud_old", 10, lidar_pc_cb, ros::TransportHints().tcpNoDelay());
+
+    // lidar_odom_sub = nh.subscribe("Odometry_old", 10, lidar_odom_cb, ros::TransportHints().tcpNoDelay());
+    // lidar_map_sub = nh.subscribe("cloud_old", 10, lidar_pc_cb, ros::TransportHints().tcpNoDelay());
+    // modify_odom_pub = nh.advertise<nav_msgs::Odometry>("Odometry_new",1);
+    // modify_my_map_pub = nh.advertise<sensor_msgs::PointCloud2>("cloud_new",1);
+
+    local_odom_pub = nh.advertise<nav_msgs::Odometry>("/local_ref",1);
     ros::Rate rate(10);
 
     ros::Time start_time = ros::Time::now();
@@ -295,12 +231,9 @@ int main(int argc, char** argv)
       if ((ros::Time::now() - start_time).toSec() > g_trigger_time && !trigger_flag) {
         std_msgs::Empty msg;
         reg_trigger_pub.publish(msg);
-        ROS_WARN("[lidar2lidar_registration_node]trigger!!!");
+        ROS_WARN("[l2l_registration_node]trigger!!!");
         trigger_flag = true;
       }
-
-      other_map_pub.publish(other_map_msg);
-
       rate.sleep();
       ros::spinOnce();
     }

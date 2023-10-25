@@ -50,52 +50,14 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
 )
 
-add_library( registration 
-    src/registration.cpp 
-    )
-
-target_link_libraries( registration
-    ${catkin_LIBRARIES} 
-    ${PCL_LIBRARIES}
-    )  
-
-
-# add_executable(icp_test_node app/icp_test_node.cpp )
-# target_link_libraries(icp_test_node
-#   ${catkin_LIBRARIES}  
-#   ${PCL_LIBRARIES}
-# )
-
-# add_executable(visual_lidar_test_node app/visual_lidar_registration_test.cpp )
-# target_link_libraries(visual_lidar_test_node
-#   registration
-#   ${catkin_LIBRARIES}  
-#   ${PCL_LIBRARIES}
-# )
-
 add_executable(lidar2lidar_registration_node app/l2l_registration_node.cpp )
 target_link_libraries(lidar2lidar_registration_node
-  registration
   ${catkin_LIBRARIES}  
   ${PCL_LIBRARIES}
 )
 
-# add_executable(visual2lidar_registration_node app/v2l_registration_node.cpp )
-# target_link_libraries(visual2lidar_registration_node
-#   ${catkin_LIBRARIES}  
-#   ${PCL_LIBRARIES}
-# )
-
-# add_executable(show_pcd_node app/show_pcd.cpp )
-# target_link_libraries(show_pcd_node
-#   ${catkin_LIBRARIES}  
-#   ${PCL_LIBRARIES}
-# )
-
-
-
-# add_executable(reg_vis app/visual_correspondence.cpp )
-# target_link_libraries(reg_vis
-#   ${catkin_LIBRARIES}  
-#   ${PCL_LIBRARIES}
-# )
+add_executable(visual2lidar_registration_node app/v2l_registration_node.cpp )
+target_link_libraries(visual2lidar_registration_node
+  ${catkin_LIBRARIES}  
+  ${PCL_LIBRARIES}
+)
